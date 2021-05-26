@@ -223,9 +223,9 @@ private:
 	//@{
 	/// Adds Horn rule to the solver.
 	void addRule(smtutil::Expression const& _rule, std::string const& _ruleName);
-	/// @returns <true, empty> if query is unsatisfiable (safe).
-	/// @returns <false, model> otherwise.
-	std::pair<smtutil::CheckResult, smtutil::CHCSolverInterface::CexGraph> query(smtutil::Expression const& _query, langutil::SourceLocation const& _location);
+	/// @returns <true, invariant, empty> if query is unsatisfiable (safe).
+	/// @returns <false, Expression(true), model> otherwise.
+	std::tuple<smtutil::CheckResult, smtutil::Expression, smtutil::CHCSolverInterface::CexGraph> query(smtutil::Expression const& _query, langutil::SourceLocation const& _location);
 
 	void verificationTargetEncountered(ASTNode const* const _errorNode, VerificationTargetType _type, smtutil::Expression const& _errorCondition);
 
@@ -239,6 +239,8 @@ private:
 		std::string _satMsg,
 		std::string _unknownMsg = ""
 	);
+
+	void generateInvariant(smtutil::Expression const& _invariant);
 
 	std::optional<std::string> generateCounterexample(smtutil::CHCSolverInterface::CexGraph const& _graph, std::string const& _root);
 
@@ -351,6 +353,9 @@ private:
 	std::map<ASTNode const*, std::set<VerificationTargetType>> m_safeTargets;
 	/// Targets proven unsafe.
 	std::map<ASTNode const*, std::set<VerificationTargetType>> m_unsafeTargets;
+
+	/// Inferred invariants.
+	std::map<ASTNode const*, std::set<std::string>> m_invariants;
 	//@}
 
 	/// Control-flow.

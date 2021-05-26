@@ -16,6 +16,8 @@
 */
 // SPDX-License-Identifier: GPL-3.0
 
+#include "libsmtutil/SolverInterface.h"
+#include <boost/algorithm/string/predicate.hpp>
 #include <libsolidity/formal/CHC.h>
 
 #ifdef HAVE_Z3
@@ -32,18 +34,23 @@
 #include <libsmtutil/CHCSmtLib2Interface.h>
 #include <libsolutil/Algorithms.h>
 
-#include <range/v3/algorithm/for_each.hpp>
-
-#include <range/v3/view/reverse.hpp>
-
 #ifdef HAVE_Z3_DLOPEN
 #include <z3_version.h>
 #endif
+
+#include <boost/algorithm/string.hpp>
+#include <boost/algorithm/string/classification.hpp>
+
+#include <range/v3/algorithm/for_each.hpp>
+#include <range/v3/view.hpp>
+#include <range/v3/view/enumerate.hpp>
+#include <range/v3/view/reverse.hpp>
 
 #include <charconv>
 #include <queue>
 
 using namespace std;
+using boost::algorithm::starts_with;
 using namespace solidity;
 using namespace solidity::util;
 using namespace solidity::langutil;
@@ -918,6 +925,7 @@ void CHC::resetSourceAnalysis()
 {
 	m_safeTargets.clear();
 	m_unsafeTargets.clear();
+	m_invariants.clear();
 	m_functionTargetIds.clear();
 	m_verificationTargets.clear();
 	m_queryPlaceholders.clear();
@@ -1417,11 +1425,12 @@ void CHC::addRule(smtutil::Expression const& _rule, string const& _ruleName)
 	m_interface->addRule(_rule, _ruleName);
 }
 
-pair<CheckResult, CHCSolverInterface::CexGraph> CHC::query(smtutil::Expression const& _query, langutil::SourceLocation const& _location)
+tuple<CheckResult, smtutil::Expression, CHCSolverInterface::CexGraph> CHC::query(smtutil::Expression const& _query, langutil::SourceLocation const& _location)
 {
 	CheckResult result;
+	smtutil::Expression invariant(true);
 	CHCSolverInterface::CexGraph cex;
-	tie(result, cex) = m_interface->query(_query);
+	tie(result, invariant, cex) = m_interface->query(_query);
 	switch (result)
 	{
 	case CheckResult::SATISFIABLE:
@@ -1434,8 +1443,9 @@ pair<CheckResult, CHCSolverInterface::CexGraph> CHC::query(smtutil::Expression c
 		spacer->setSpacerOptions(false);
 
 		CheckResult resultNoOpt;
+		smtutil::Expression invariantNoOpt(true);
 		CHCSolverInterface::CexGraph cexNoOpt;
-		tie(resultNoOpt, cexNoOpt) = m_interface->query(_query);
+		tie(resultNoOpt, invariantNoOpt, cexNoOpt) = m_interface->query(_query);
 
 		if (resultNoOpt == CheckResult::SATISFIABLE)
 			cex = move(cexNoOpt);
@@ -1455,7 +1465,7 @@ pair<CheckResult, CHCSolverInterface::CexGraph> CHC::query(smtutil::Expression c
 		m_errorReporter.warning(1218_error, _location, "CHC: Error trying to invoke SMT solver.");
 		break;
 	}
-	return {result, cex};
+	return {result, invariant, cex};
 }
 
 void CHC::verificationTargetEncountered(
@@ -1576,6 +1586,21 @@ void CHC::checkVerificationTargets()
 		checkedErrorIds.insert(target.errorId);
 	}
 
+	for (auto const& [node, invs]: m_invariants)
+	{
+		string what;
+		if (auto contract = dynamic_cast<ContractDefinition const*>(node))
+			what = contract->fullyQualifiedName();
+		string msg = "Contract invariants for " + what + ":\n";
+		for (auto const& inv: invs)
+			msg += inv + "\n";
+		m_errorReporter.warning(
+			0000_error,
+			node->location(),
+			msg
+		);
+	}
+
 	// There can be targets in internal functions that are not reachable from the external interface.
 	// These are safe by definition and are not even checked by the CHC engine, but this information
 	// must still be reported safe by the BMC engine.
@@ -1609,9 +1634,12 @@ void CHC::checkAndReportTarget(
 	createErrorBlock();
 	connectBlocks(_target.value, error(), _target.constraints);
 	auto const& location = _target.errorNode->location();
-	auto const& [result, model] = query(error(), location);
+	auto [result, invariant, model] = query(error(), location);
 	if (result == CheckResult::UNSATISFIABLE)
+	{
 		m_safeTargets[_target.errorNode].insert(_target.type);
+		generateInvariant(invariant);
+	}
 	else if (result == CheckResult::SATISFIABLE)
 	{
 		solAssert(!_satMsg.empty(), "");
@@ -1636,6 +1664,219 @@ void CHC::checkAndReportTarget(
 			location,
 			"CHC: " + _unknownMsg
 		);
+}
+
+namespace
+{
+
+smtutil::Expression substitute(smtutil::Expression _from, map<string, string> const& _subst)
+{
+	if (_from.name == "forall" || _from.name == "exists")
+		return smtutil::Expression(true);
+	if (_subst.count(_from.name))
+		_from.name = _subst.at(_from.name);
+	for (auto& arg: _from.arguments)
+		arg = substitute(arg, _subst);
+	return _from;
+}
+
+string formatDatatypeAccessor(smtutil::Expression const& _expr, vector<string> const& _args)
+{
+	auto const& op = _expr.name;
+
+	// This is the most complicated part of the translation.
+	// Datatype acessor means access to a field of a datatype.
+	// In our encoding, datatypes are used to encode:
+	// - arrays/mappings as the tuple (array, length)
+	// - structs as the tuple (<member1>, ..., <memberK>)
+	// - hash and signature functions as the tuple (keccak256, sha256, ripemd160, ecrecover),
+	//   where each element is an array emulating an UF
+	// - abi.* functions as the tuple (<abiCall1>, ..., <abiCallK>).
+	if (op == "dt_accessor_keccak256")
+		return "keccak256";
+	if (op == "dt_accessor_sha256")
+		return "sha256";
+	if (op == "dt_accessor_ripemd160")
+		return "ripemd160";
+	if (op == "dt_accessor_ecrecover")
+		return "ecrecover";
+
+	string a = "accessor_";
+	// Struct members have suffix "accessor_<memberName>".
+	string type = op.substr(op.rfind(a) + a.size());
+	solAssert(_expr.arguments.size() == 1, "");
+
+	if (type == "length")
+		return _args.at(0) + ".length";
+	if (type == "array")
+		return _args.at(0);
+
+	if (
+		starts_with(type, "block") ||
+		starts_with(type, "msg") ||
+		starts_with(type, "tx") ||
+		starts_with(type, "abi")
+	)
+		return type;
+
+	if (starts_with(type, "t_function_abi"))
+		return type;
+
+	return _args.at(0) + "." + type;
+}
+
+string formatGenericOp(smtutil::Expression const& _expr, vector<string> const& _args)
+{
+	return _expr.name + "(" + boost::algorithm::join(_args, ", ") + ")";
+}
+
+string formatInfixOp(string const& _op, vector<string> const& _args)
+{
+	return "(" + boost::algorithm::join(_args, " " + _op + " ") + ")";
+}
+
+string formatUnaryOp(smtutil::Expression const& _expr, vector<string> const& _args)
+{
+	if (_expr.name == "not")
+		return "!" + _args.at(0);
+	// Other operators such as exists may end up here.
+	return formatGenericOp(_expr, _args);
+}
+
+// Infix operators with format replacements.
+static map<string, string> const infixOps{
+	{"and", "&&"},
+	{"or", "||"},
+	{"implies", "=>"},
+	{"=", "="},
+	{">", ">"},
+	{">=", ">="},
+	{"<", "<"},
+	{"<=", "<="},
+	{"+", "+"},
+	{"-", "-"},
+	{"*", "*"},
+	{"/", "/"},
+	{"div", "/"},
+	{"mod", "%"}
+};
+
+static set<string> const arrayOps{"select", "store", "const_array"};
+
+static set<string> const ufs{"keccak256", "sha256", "ripemd160", "ecrecover"};
+
+string formatArrayOp(smtutil::Expression const& _expr, vector<string> const& _args)
+{
+	if (_expr.name == "select")
+	{
+		auto const& a0 = _args.at(0);
+		if (ufs.count(a0) || starts_with(a0, "t_function_abi"))
+			return _args.at(0) + "(" + _args.at(1) + ")";
+		return _args.at(0) + "[" + _args.at(1) + "]";
+	}
+	if (_expr.name == "store")
+		return "(" + _args.at(0) + "[" + _args.at(1) + "] := " + _args.at(2) + ")";
+	return formatGenericOp(_expr, _args);
+}
+
+string toSolidityStr(smtutil::Expression const& _expr)
+{
+	auto const& op = _expr.name;
+
+	auto const& args = _expr.arguments;
+	auto strArgs = applyMap(args, [](auto const& _arg) { return toSolidityStr(_arg); });
+
+	// Constant or variable.
+	if (args.empty())
+		return op;
+
+	if (starts_with(op, "dt_accessor"))
+		return formatDatatypeAccessor(_expr, strArgs);
+
+	// Some of these (and, or, +, *) may have >= 2 arguments from z3.
+	if (infixOps.count(op))
+		return formatInfixOp(infixOps.at(op), strArgs);
+
+	if (arrayOps.count(op))
+		return formatArrayOp(_expr, strArgs);
+
+	if (args.size() == 1)
+		return formatUnaryOp(_expr, strArgs);
+
+	// Other operators such as bv2int, int2bv may end up here.
+	return op + "(" + boost::algorithm::join(strArgs, ", ") + ")";
+}
+
+}
+
+void CHC::generateInvariant(smtutil::Expression const& _invariant)
+{
+	map<string, pair<smtutil::Expression, smtutil::Expression>> interfaceEqs;
+	set<string> targets{"interface", "nondet_interface"};
+	vector<smtutil::Expression> q{_invariant};
+	while (!q.empty())
+	{
+		auto e = q.back();
+		q.pop_back();
+		if (e.name == "=")
+			for (auto const& t: targets)
+			{
+				auto arg0 = e.arguments.at(0);
+				auto arg1 = e.arguments.at(1);
+				if (starts_with(arg0.name, t))
+					interfaceEqs.insert({arg0.name, {arg0, move(arg1)}});
+				else if (starts_with(arg1.name, t))
+					interfaceEqs.insert({arg1.name, {arg1, move(arg0)}});
+			}
+		for (auto const& arg: e.arguments)
+			q.push_back(arg);
+	}
+
+	auto collectInvariants = [&](map<ContractDefinition const*, Predicate const*> _predicates) {
+		for (auto const& [contract, pred]: _predicates)
+		{
+			auto predName = pred->functor().name;
+			if (interfaceEqs.count(predName))
+			{
+				auto const& iface = interfaceEqs.at(predName);
+				auto const& stateVars = stateVariablesIncludingInheritedAndPrivate(*contract);
+
+				map<string, string> subst;
+				size_t nArgs = iface.first.arguments.size();
+				if (starts_with(predName, "interface"))
+				{
+					subst[iface.first.arguments.at(0).name] = "address(this)";
+					solAssert(nArgs == stateVars.size() + 4, "");
+					for (size_t i = nArgs - stateVars.size(); i < nArgs; ++i)
+						subst[iface.first.arguments.at(i).name] = stateVars.at(i - 4)->name();
+				}
+				else
+				{
+					subst[iface.first.arguments.at(0).name] = "<errorCode>";
+					subst[iface.first.arguments.at(1).name] = "address(this)";
+					solAssert(nArgs == stateVars.size() * 2 + 6, "");
+					for (size_t i = nArgs - stateVars.size(), s = 0; i < nArgs; ++i, ++s)
+						subst[iface.first.arguments.at(i).name] = stateVars.at(s)->name() + "'";
+					for (size_t i = nArgs - (stateVars.size() * 2 + 1), s = 0; i < nArgs - (stateVars.size() + 1); ++i, ++s)
+						subst[iface.first.arguments.at(i).name] = stateVars.at(s)->name();
+				}
+				//cout << iface.first.toString() << endl;
+				//cout << iface.second.toString() << endl;
+
+				auto r = substitute(iface.second, subst);
+				//cout << r.toString() << endl;
+				set<string> ignore{"exists", "true", "false"};
+				if (!ignore.count(r.name))
+				{
+					auto f = toSolidityStr(r);
+					if (!m_invariants[contract].count(f))
+						m_invariants[contract].insert(f);
+				}
+			}
+		}
+	};
+	collectInvariants(m_interfaces);
+	collectInvariants(m_nondetInterfaces);
 }
 
 /**
