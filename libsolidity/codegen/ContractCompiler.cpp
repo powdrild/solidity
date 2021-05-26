@@ -1351,6 +1351,7 @@ bool ContractCompiler::visit(PlaceholderStatement const& _placeholderStatement)
 
 bool ContractCompiler::visit(Block const& _block)
 {
+	m_context.pushVisitedNodes(&_block);
 	if (_block.unchecked())
 	{
 		solAssert(m_context.arithmetic() == Arithmetic::Checked, "");
@@ -1362,6 +1363,7 @@ bool ContractCompiler::visit(Block const& _block)
 
 void ContractCompiler::endVisit(Block const& _block)
 {
+	m_context.popVisitedNodes();
 	if (_block.unchecked())
 	{
 		solAssert(m_context.arithmetic() == Arithmetic::Wrapping, "");

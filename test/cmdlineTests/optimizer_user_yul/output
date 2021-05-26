@@ -64,7 +64,7 @@ tag_6:
 tag_8:
     /* "optimizer_user_yul/input.sol":380:383  { } */
   pop
-    /* "optimizer_user_yul/input.sol":340:513  {... */
+    /* "optimizer_user_yul/input.sol":74:516  constructor() payable... */
   pop
     /* "optimizer_user_yul/input.sol":60:518  contract C... */
   dataSize(sub_0)
