@@ -3154,6 +3154,16 @@ bool IRGeneratorForStatements::visit(TryCatchClause const& _clause)
 void IRGeneratorForStatements::setLocation(ASTNode const& _node)
 {
 	m_currentLocation = _node.location();
+
+	if (m_currentLocation.isValid())
+		m_code <<
+			"/// @origin " <<
+			m_currentLocation.source->name() <<
+			":" <<
+			m_currentLocation.start <<
+			"," <<
+			m_currentLocation.end <<
+			"\n";
 }
 
 string IRGeneratorForStatements::linkerSymbol(ContractDefinition const& _library) const
