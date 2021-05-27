@@ -1,0 +1,12 @@
+Warning: CHC analysis was not possible since no Horn solver was enabled.
+
+Warning: BMC: Assertion violation happens here.
+ --> model_checker_solvers_cvc4/input.sol:5:3:
+  |
+5 | 		assert(x > 0);
+  | 		^^^^^^^^^^^^^
+Note: Counterexample:
+  x = 0
+
+Note: Callstack:
+Note:
