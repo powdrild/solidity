@@ -153,6 +153,17 @@ Imports
 
 The import statement specifies an *import path*, which, after being lightly processed, becomes a
 source unit name.
+
+.. code-block:: solidity
+    :caption: contracts/contract.sol
+
+    import "./math/math.sol";
+    import "contracts/tokens/token.sol";
+
+In the above ``./math/math.sol`` and ``contracts/tokens/token.sol`` are import paths while the
+source unit names they translate to are ``contracts/math/math.sol`` and ``contracts/tokens/token.sol``
+respectively.
+
 Based on how the processing is performed, we can divide imports into two categories:
 
 - :ref:`Direct imports <direct-imports>`, where you specify the full source unit name.
@@ -259,6 +270,7 @@ Here are some examples of what you can expect if they are not:
     import "./util//util.sol";          // source unit name: lib/src/../util/util.sol
     import "../util/../array/util.sol"; // source unit name: lib/src/array/util.sol
     import "../.././../util.sol";       // source unit name: util.sol
+    import "../../.././../util.sol";    // source unit name: util.sol
 
 .. note::
 
@@ -436,13 +448,6 @@ Here are the detailed rules governing the behaviour of remappings:
 #. **Prefix cannot be empty but context and target are optional.**
 
    If ``target`` is omitted, it defaults to the value of the ``prefix``.
-
-.. note::
-
-    ``solc`` only allows you to include files from certain directories.
-    They have to be in the directory (or subdirectory) of one of the explicitly specified source
-    files or in the directory (or subdirectory) of a remapping target.
-    If you want to allow direct absolute includes, add the remapping ``/=/``.
 
 .. index:: Remix IDE, file://
 

@@ -184,6 +184,7 @@ At a global level, you can use import statements of the following form:
 
   import "filename";
 
+The ``filename`` part is called an *import path*.
 This statement imports all global symbols from "filename" (and symbols imported there) into the
 current global scope (different than in ES6 but backwards-compatible for Solidity).
 This form is not recommended for use, because it unpredictably pollutes the namespace.
@@ -216,16 +217,31 @@ the code below creates new global symbols ``alias`` and ``symbol2`` which refere
 
   import {symbol1 as alias, symbol2} from "filename";
 
-.. index:: virtual filesystem, source unit name, import; path, filesystem path
+.. index:: virtual filesystem, source unit name, import; path, filesystem path, import callback, Remix IDE
 
 Import paths
 ------------
 
-The paths used in imports in a general case do not have to be filesystem paths.
-The compiler maintains an internal database (:ref:`virtual filesystem <virtual-filesystem>`) where
-each compiled source unit is assigned a unique *source unit name* which is an opaque and unstructured identifier.
-The import path is translated into a source unit name and used to find the corresponding source unit
-in this database.
+In order to be able to support reproducible builds on all platforms, the Solidity compiler has to
+abstract away the details of the filesystem where source files are stored.
+For this reason import paths do not refer directly to files in the host filesystem.
+Instead the compiler maintains an internal database (*virtual filesystem* or *VFS* for short) where
+each source unit is assigned a unique *source unit name* which is an opaque and unstructured identifier.
+The import path specified in an import statement is translated into a source unit name and used to
+find the corresponding source unit in this database.
+
+Using the :ref:`Standard JSON <compiler-api>` API it is possible to directly provide the content of
+all the source files as a part of compiler's input.
+In this case source unit names are truly arbitrary.
+If, however, you want the compiler to automatically find and load source code into the VFS, your
+source unit names need to be structured in a way that makes it possible for an :ref:`import callback
+<import-callback>` to locate them.
+When using the command-line compiler the default import callback supports only loading source code
+from in the host filesystem, which means that your source unit names must be paths.
+Some environments, provide custom callbacks that are more versatile.
+For example the `Remix IDE <https://remix.ethereum.org/>`_ provides one that
+lets you `import files from HTTP, IPFS and Swarm URLs or refer directly to packages in NPM registry
+<https://remix-ide.readthedocs.io/en/latest/import.html>`_.
 
 For a complete description of the virtual filesystem and the path resolution logic used by the
 compiler see :ref:`Path Resolution <path-resolution>`.
