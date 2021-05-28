@@ -290,44 +290,52 @@ directory of the compiler.
 Import Remapping
 ================
 
-Base path and relative imports on their own allow you to freely move your project around the
-filesystem but force you to keep all files within a single directory and its subdirectories.
-When using external libraries it is often desirable to keep their files in a separate location.
-To help with that, the compiler provides another mechanism: import remapping.
+Import remapping allows you to redirect imports to a different location in the virtual filesystem.
+The mechanism works by changing the translation between import paths and source unit names.
+For example you can set up a remapping so that any import from the virtual directory
+``github.com/ethereum/dapp-bin/library/`` would be seen as an import from ``dapp-bin/library/`` instead.
 
-Remapping allows you to have the compiler replace import path prefixes with something else.
-For example you can set up a remapping so that everything imported from the virtual directory
-``github.com/ethereum/dapp-bin/library`` would actually receive source unit names starting with
-``dapp-bin/library``.
-By setting base path to ``/project`` you could then have the compiler find them in
-``/project/dapp-bin/library``
+You can limit the scope of a remapping by specifying a *context*.
+This allows creating remappings that apply only to imports located in a specific library or a specific file.
+Without a context a remapping is applied to every matching import in all the files in the virtual
+filesystem.
 
-The remappings can depend on a context, which allows you to configure packages to import,
-e.g. different versions of a library of the same name.
+Import remappings have the form of ``context:prefix=target``:
 
-.. warning::
+- ``context`` must match the beginning of the source unit name of the file containing the import.
+- ``prefix`` must match the beginning of the source unit name resulting from the import.
+- ``target`` is the value the prefix is replaced with.
 
-    Information about used remappings is stored in contract metadata so modifying them will result
-    in a slightly different bytecode.
-    This means that if you move your project files to different locations and use remappings to
-    avoid having to adjust the source code, your project will compile but will no longer produce the
-    exact same bytecode as without the remappings.
-
-Import remappings have the form of ``context:prefix=target``.
-All files in or below the ``context`` directory that import a file that starts with ``prefix`` are
-redirected by replacing ``prefix`` with ``target``.
-For example, if you clone ``github.com/ethereum/dapp-bin/`` locally to ``/project/dapp-bin``,
-you can use the following in your source file:
-
-::
-
-    import "github.com/ethereum/dapp-bin/library/iterable_mapping.sol" as it_mapping;
-
-Then run the compiler:
+For example, if you clone https://github.com/ethereum/dapp-bin/ locally to ``/project/dapp-bin``
+and run the compiler with:
 
 .. code-block:: bash
 
     solc github.com/ethereum/dapp-bin/=dapp-bin/ --base-path /project source.sol
+
+you can use the following in your source file:
+
+.. code-block:: solidity
+
+    import "github.com/ethereum/dapp-bin/library/math.sol"; // source unit name: dapp-bin/library/math.sol
+
+The compiler will look for the file in the VFS under ``dapp-bin/library/math.sol``.
+If the file is not available there, the source unit name will be passed to the Host Filesystem
+Loader, which will then look in ``/project/dapp-bin/library/iterable_mapping.sol``.
+
+.. warning::
+
+    Information about remappings is stored in contract metadata.
+    Since the binary produced by the compiler has a hash of the metadata embedded in it, any
+    modification to the remappings will result in a slightly different bytecode.
+
+    For this reason you should be careful not to include any local information in remapping targets.
+    For example if your library is located in ``/home/user/packages/mymath/math.sol``, a remapping
+    like ``@math/=/home/user/packages/mymath/`` would result in your home directory being included in
+    the metadata.
+    To be able to reproduce the same bytecode with such a remapping on a different machine, you
+    would need to recreate parts of your local directory structure in the VFS and (if you rely on
+    Host Filesystem Loader) also in the host filesystem.
 
 As a more complex example, suppose you rely on a module that uses an old version of dapp-bin that
 you checked out to ``/project/dapp-bin_old``, then you can run:
@@ -346,13 +354,16 @@ Here are the detailed rules governing the behaviour of remappings:
 
 #. **Remappings only affect the translation between import paths and source unit names.**
 
-   Source unit names added via other means cannot be remapped.
+   Source unit names added to the VFS in any other way cannot be remapped.
    For example the paths you specify on the command-line and the ones in ``sources.urls`` in
    Standard JSON are not affected.
 
-    .. code-block:: bash
+   .. code-block:: bash
 
-        solc /project=/contracts /project/contract.sol # source unit name: /project/contract.sol
+       solc /project/=/contracts/ /project/contract.sol # source unit name: /project/contract.sol
+
+   In the example above the compiler will load the source code from ``/project/contract.sol`` and
+   place it under that exact source unit name in the VFS, not under ``/contract/contract.sol``.
 
 #. **Context and prefix must match source unit names, not import paths.**
 
@@ -362,7 +373,7 @@ Here are the detailed rules governing the behaviour of remappings:
 
      .. code-block:: bash
 
-         solc ./=a /project=b /project/contract.sol
+         solc ./=a/ /project/=b/ /project/contract.sol # source unit name: /project/contract.sol
 
      .. code-block:: solidity
          :caption: /project/contract.sol
@@ -374,7 +385,7 @@ Here are the detailed rules governing the behaviour of remappings:
 
      .. code-block:: bash
 
-         solc /project=/contracts /project/contract.sol --base-path /project
+         solc /project/=/contracts/ /project/contract.sol --base-path /project # source unit name: /project/contract.sol
 
      .. code-block:: solidity
          :caption: /project/contract.sol
@@ -392,14 +403,14 @@ Here are the detailed rules governing the behaviour of remappings:
      This means that targets starting with ``./`` and ``../`` have no special meaning and are
      relative to the base path rather than to the location of the source file.
 
-   - Remapping targets are not normalized so ``@root=./a/b//`` will remap ``@root/contract.sol``
+   - Remapping targets are not normalized so ``@root/=./a/b//`` will remap ``@root/contract.sol``
      to ``./a/b//contract.sol`` and not ``a/b/contract.sol``.
 
    - If the target does not end with a slash, the compiler will not add one automatically:
 
      .. code-block:: bash
 
-         solc /project/=/contracts /project/contract.sol
+         solc /project/=/contracts /project/contract.sol # source unit name: /project/contract.sol
 
      .. code-block:: solidity
          :caption: /project/contract.sol
