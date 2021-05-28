@@ -123,7 +123,7 @@ The initial content of the VFS depends on how you invoke the compiler:
            "settings": {"outputSelection": {"*": { "*": ["metadata", "evm.bytecode"]}}}
        }
 
-   If an import callback is available, the compiler will pass it the source unit names specified in
+   If an import callback is available, the compiler will give it the source unit names specified in
    ``urls`` one by one, until one is loaded successfully or the end of the list is reached.
 
    The source unit names are determined the same way as when using ``content`` - they are keys of
